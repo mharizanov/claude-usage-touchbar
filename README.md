@@ -154,6 +154,20 @@ restart it). With it set, Clawd stands still and just reports the numbers —
 you can still drag him along the bar by hand, since that is your own doing,
 not idle animation.
 
+### OLED wear
+
+The Touch Bar is an OLED panel and the readout never moves, so two things are
+built in, with no setting for either:
+
+- The whole scene drifts by one physical pixel every 3 minutes, across ±3pt
+  horizontally and ±0.5pt vertically (a full horizontal sweep takes 72 minutes).
+  Too slow to notice; it spreads the wear on the labels, bar edges and ticks.
+  The `esc` and `⌄` buttons are drawn by macOS and do not move.
+- After 90 s with no keyboard or trackpad input it stops drawing. macOS
+  blanks the bar on its own after about that long, so frames drawn then were
+  CPU spent on nothing. Polling continues, so the numbers are current when
+  you come back.
+
 ## How it fits together
 
 ```

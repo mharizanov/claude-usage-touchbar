@@ -46,6 +46,23 @@ static CGFloat const kSceneW = 480.0;
 static CGFloat const kSceneH = 30.0;
 static double  const kFPS    = 15.0;    // both reference pet apps land at 14-18
 
+// The Touch Bar is OLED, and the readout sits on the same pixels for as long as
+// the bar is lit. So the whole scene drifts by one physical pixel (0.5pt on the
+// 2x panel) every few minutes: too slow to notice, enough to spread the wear.
+static NSTimeInterval const kOrbitStep = 180.0;
+// macOS dims the bar after about a minute without input and then turns it off
+// (third-party figures; Apple does not document them). Past this, stop drawing.
+static NSTimeInterval const kIdleStop = 90.0;
+
+// x sweeps -3..+3pt and back in 24 steps (72 min), y moves one row per sweep.
+// Kept inside the margins: 8pt right of the readout, 0.5pt under the clips.
+static NSPoint OrbitOffset(NSTimeInterval now) {
+    long n = (long)(now / kOrbitStep);
+    int k = (int)(n % 24);
+    return NSMakePoint(((k <= 12) ? k : 24 - k) * 0.5 - 3.0,
+                       ((n / 24) % 3) * 0.5 - 0.5);
+}
+
 // Readout: every limit gets an identical cell — label, percentage, bar — laid
 // out side by side so they can be compared at a glance. Earlier versions gave
 // 5h and 7d a row each and demoted the per-model cap to a bare number with no
@@ -120,6 +137,7 @@ static int ClipForMood(Mood m, int previous) {
 @property (nonatomic, copy) NSString *scopedName;   // per-model weekly cap (e.g. Fable)
 @property (nonatomic, copy) NSString *state;   // ok | stale | expired | none
 @property (nonatomic) CGFloat x, dir, phase;
+@property (nonatomic) NSPoint orbit;   // whole-scene offset against OLED wear, see kOrbitStep
 @property (nonatomic) BOOL haveData;
 @property (nonatomic) BOOL autoRefresh;   // script can relaunch the CLI itself
 // `defaults write local.claude-touchbar NoAnimation -bool YES` — for a readout
@@ -174,7 +192,8 @@ static int ClipForMood(Mood m, int previous) {
     if (!t) return;
     // Direct touches report a real point in the view. normalizedPosition and
     // deviceSize belong to indirect (trackpad) touches and raise here.
-    CGFloat tx = [t locationInView:self].x;
+    // Minus the orbit: he is drawn shifted by it.
+    CGFloat tx = [t locationInView:self].x - self.orbit.x;
     // Grab only if the touch lands on him, with a generous margin: he is 39pt
     // wide on a bar you hit with a fingertip.
     if (fabs(tx - self.x) < 34) {
@@ -193,7 +212,7 @@ static int ClipForMood(Mood m, int previous) {
     NSTouch *t = [e touchesMatchingPhase:NSTouchPhaseAny inView:self].anyObject
               ?: [e touchesMatchingPhase:NSTouchPhaseAny inView:nil].anyObject;
     if (!t) return;
-    CGFloat tx = [t locationInView:self].x;
+    CGFloat tx = [t locationInView:self].x - self.orbit.x;
     CGFloat nx = tx - self.grabDX;
     self.dragVX = tx - self.lastDragX;   // for the throw
     self.lastDragX = tx;
@@ -426,6 +445,12 @@ static void DrawGrid(const unsigned char *g, NSPoint origin, CGFloat px,
     [NSColor.clearColor set];
     NSRectFill(dirty);
 
+    // Everything below, readout included, is drawn shifted by the orbit.
+    // AppKit restores the graphics state after drawRect:, so no undo needed.
+    NSAffineTransform *shift = [NSAffineTransform transform];
+    [shift translateXBy:self.orbit.x yBy:self.orbit.y];
+    [shift concat];
+
     CGFloat midY = NSHeight(self.bounds) / 2.0;
 
     if (!self.haveData) {
@@ -452,7 +477,8 @@ static void DrawGrid(const unsigned char *g, NSPoint origin, CGFloat px,
 
     // Ground line, like the reference art.
     [[NSColor colorWithWhite:1.0 alpha:0.14] set];
-    NSRectFill(NSMakeRect(0, feet.y - 1.5, NSWidth(self.bounds), 1.0));
+    // Overdrawn by the orbit's reach on both ends, so a shift never leaves a gap.
+    NSRectFill(NSMakeRect(-4, feet.y - 1.5, NSWidth(self.bounds) + 8, 1.0));
 
     // Panic: motion streaks trailing behind.
     if (mood == MoodPanic) {
@@ -987,12 +1013,21 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
     if (self.asleep || self.dark) return;
 
     NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
+    if (now - self.lastPoll >= 30.0) { self.lastPoll = now; [self poll]; }
+
+    // Hands off long enough for macOS to have blanked the bar: drawing into it
+    // only burns CPU. Polling above carries on, so the numbers are current when
+    // it lights up again. A finger on the bar may not count as HID input, so a
+    // drag in progress keeps it going.
+    CFTimeInterval idle = CGEventSourceSecondsSinceLastEventType(
+        kCGEventSourceStateHIDSystemState, kCGAnyInputEventType);
+    if (idle >= kIdleStop && !self.pet.dragging) { self.lastFrame = now; return; }
+
     NSTimeInterval dt = MIN(now - self.lastFrame, 0.25);   // clamp after a stall
     self.lastFrame = now;
 
+    self.pet.orbit = OrbitOffset(now);
     [self.pet advance:dt];
-
-    if (now - self.lastPoll >= 30.0) { self.lastPoll = now; [self poll]; }
 }
 
 - (void)poll {
