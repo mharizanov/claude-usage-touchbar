@@ -163,10 +163,13 @@ built in, with no setting for either:
   horizontally and ±0.5pt vertically (a full horizontal sweep takes 72 minutes).
   Too slow to notice; it spreads the wear on the labels, bar edges and ticks.
   The `esc` and `⌄` buttons are drawn by macOS and do not move.
-- After 90 s with no keyboard or trackpad input it stops drawing. macOS
-  blanks the bar on its own after about that long, so frames drawn then were
-  CPU spent on nothing. Polling continues, so the numbers are current when
-  you come back.
+- After 90 s with no keyboard or trackpad input it stops drawing and takes
+  the widget off the Touch Bar, and it does the same when the screen locks or
+  the display sleeps. Only freezing the frame left the bar presented, and it
+  was seen still lit with nobody at the Mac. Dismissing hands the bar back to
+  macOS, which can then dim and blank it as usual (not yet confirmed on the
+  panel). The first input brings the
+  widget back; polling continues, so the numbers are current.
 
 ## How it fits together
 

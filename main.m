@@ -51,7 +51,8 @@ static double  const kFPS    = 15.0;    // both reference pet apps land at 14-18
 // 2x panel) every few minutes: too slow to notice, enough to spread the wear.
 static NSTimeInterval const kOrbitStep = 180.0;
 // macOS dims the bar after about a minute without input and then turns it off
-// (third-party figures; Apple does not document them). Past this, stop drawing.
+// (third-party figures; Apple does not document them). Whether it does so over
+// a presented system-modal bar is unclear, so past this, dismiss the bar.
 static NSTimeInterval const kIdleStop = 90.0;
 
 // x sweeps -3..+3pt and back in 24 steps (72 min), y moves one row per sweep.
@@ -868,6 +869,10 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
 @property (nonatomic) NSTimeInterval lastFrame;
 @property (nonatomic) NSTimeInterval lastPoll;
 @property (nonatomic) BOOL polling, asleep, dark;
+// Withdrawn after kIdleStop without input. Freezing the drawing left the bar
+// presented, and it was seen still lit with nobody at the Mac. Dismissing hands
+// the bar back to macOS, which owns dimming and blanking.
+@property (nonatomic) BOOL idleHidden;
 // User tapped the close button. Distinct from `asleep`: a locked screen is
 // temporary and self-clearing, this is a deliberate choice that must survive
 // every future app-switch until the mini bar's reopen button (kMiniID) brings
@@ -953,6 +958,9 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
 // has to keep presenting whichever bar matches `collapsed` — otherwise the
 // first app switch after a close would silently expand the widget again.
 - (void)present {
+    // Also reached from the app-switch observer, which fires when loginwindow
+    // takes over at lock: never re-assert into a locked, dark or idle bar.
+    if (self.asleep || self.dark || self.idleHidden) return;
     NSTouchBar *target = self.collapsed ? self.miniBar : self.bar;
     [NSTouchBar presentSystemModalTouchBar:target placement:0 systemTrayItemIdentifier:nil];
 }
@@ -960,12 +968,18 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
 - (void)collapse:(id)sender { self.collapsed = YES; [self present]; }
 - (void)reopen:(id)sender   { self.collapsed = NO;  [self present]; }
 
-- (void)sleep { self.asleep = YES; }
+// Take both bars off the Touch Bar. Dismissing the one not presented is a no-op.
+- (void)withdraw {
+    [NSTouchBar dismissSystemModalTouchBar:self.bar];
+    if (self.miniBar) [NSTouchBar dismissSystemModalTouchBar:self.miniBar];
+}
+
+- (void)sleep { self.asleep = YES; [self withdraw]; }
 - (void)wake  { self.asleep = NO; [self present]; }
 // Separate from `asleep`: the display can wake while the screen is still
 // locked, and that must not restart the animation.
-- (void)screensSlept { self.dark = YES; }
-- (void)screensWoke  { self.dark = NO; }
+- (void)screensSlept { self.dark = YES; [self withdraw]; }
+- (void)screensWoke  { self.dark = NO; [self present]; }
 
 - (nullable NSTouchBarItem *)touchBar:(NSTouchBar *)bar
                 makeItemForIdentifier:(NSTouchBarItemIdentifier)identifier {
@@ -1015,13 +1029,18 @@ static void DrawDrop(CGFloat x, CGFloat y, CGFloat scale, NSColor *c, CGFloat al
     NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
     if (now - self.lastPoll >= 30.0) { self.lastPoll = now; [self poll]; }
 
-    // Hands off long enough for macOS to have blanked the bar: drawing into it
-    // only burns CPU. Polling above carries on, so the numbers are current when
-    // it lights up again. A finger on the bar may not count as HID input, so a
-    // drag in progress keeps it going.
+    // Hands off past kIdleStop: withdraw the bar so macOS can blank the OLED,
+    // and stop drawing. Polling above carries on, so the numbers are current
+    // when the first input brings it back. A finger on the bar may not count
+    // as HID input, so a drag in progress keeps it going.
     CFTimeInterval idle = CGEventSourceSecondsSinceLastEventType(
         kCGEventSourceStateHIDSystemState, kCGAnyInputEventType);
-    if (idle >= kIdleStop && !self.pet.dragging) { self.lastFrame = now; return; }
+    if (idle >= kIdleStop && !self.pet.dragging) {
+        self.lastFrame = now;
+        if (!self.idleHidden) { self.idleHidden = YES; [self withdraw]; }
+        return;
+    }
+    if (self.idleHidden) { self.idleHidden = NO; [self present]; }
 
     NSTimeInterval dt = MIN(now - self.lastFrame, 0.25);   // clamp after a stall
     self.lastFrame = now;
